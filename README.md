@@ -6,11 +6,19 @@ before forwarding them to any OTLP-compatible backend (Grafana Alloy, OTEL
 Collector, Grafana Cloud, …).
 
 ```
-Alloy / OTEL  ──OTLP──▶  Gateway  ──HTTP──▶  Presidio Analyzer + Anonymizer
-                          │  ▲
-                          └──┘  redact log bodies (+ optional attributes)
-                          │
-                          └──OTLP──▶  downstream target(s)  (fan-out)
+                           ┌────────────────────────────────┐
+                           │ Presidio Analyzer + Anonymizer │
+                           └────────────────────────────────┘
+                                 ▲                     │
+                     HTTP request│                     │ HTTP response
+                     (log bodies)│                     ▼ (redacted text)
+  ┌──────────────┐ OTLP    ┌────────────────────────────────┐        ┌──▶ Grafana Cloud
+  │ Alloy / OTEL │────────▶│            Gateway             │──OTLP──┼──▶ stdout
+  │ (front door) │ gRPC    │      detect + redact PII       │        └──▶ file
+  └──────────────┘         └────────────────────────────────┘
+         ▲
+   OTLP  │  Loki push
+  clients┘  (via Alloy)
 ```
 
 The gateway is a **single container**. Presidio runs as its own two services
@@ -18,21 +26,30 @@ The gateway is a **single container**. Presidio runs as its own two services
 
 ## What it does
 
-- Ingests logs over **OTLP/gRPC** (`:4317`) and **OTLP/HTTP** (`:4318`).
-- Detects entities with the Presidio **Analyzer** and redacts them with the
-  Presidio **Anonymizer**.
+- Ingests logs over **OTLP/gRPC** (`:4317`) and **OTLP/HTTP** (`:4318`); the
+  HTTP path accepts both protobuf and JSON payloads.
+- Detects sensitive entities with the Presidio **Analyzer** and rewrites them
+  with the Presidio **Anonymizer** — `replace` (default, `<ENTITY_TYPE>`),
+  `mask`, `hash`, `redact`, or a fixed placeholder.
+- Redacts string log bodies and structured JSON bodies (optionally limited to
+  named fields), recursing into nested map/array values, plus explicitly
+  selected attribute values.
 - Preserves all non-sensitive metadata — timestamps, severity, resource/scope
   attributes, and trace/span IDs are never touched.
-- Redacts plain-text bodies and structured JSON bodies (optionally scoped to
-  named fields), plus explicitly configured attributes.
-- Forwards sanitized logs over OTLP to one or more downstream targets
-  (fan-out), with per-target auth headers and retry/backoff.
-- Exposes `/healthz`, `/readyz`, and Prometheus `/metrics`.
+- Forwards sanitized logs over **OTLP/gRPC or OTLP/HTTP** to one or more
+  downstream targets (fan-out) — e.g. an OTEL Collector or Grafana Cloud —
+  each with its own auth headers, timeout, and retry/backoff.
+- Fails safe: rejects a batch with `503`/`UNAVAILABLE` so the sender retries
+  when Presidio is unavailable (configurable via `FAIL_MODE`, see below) or
+  when every downstream target fails.
+- Exposes `/healthz` (liveness), `/readyz` (Presidio reachability), and
+  Prometheus `/metrics`.
 
 ## Quick start (Docker Compose)
 
 Brings up Presidio (analyzer + anonymizer), the gateway, and a downstream OTEL
-Collector that prints whatever it receives.
+Collector that echoes what it receives to stdout and to
+`output/received-logs.json`, and (when configured) forwards it to Grafana Cloud.
 
 ```bash
 docker compose up --build
@@ -45,9 +62,27 @@ pip install -r requirements.txt        # for the sender script
 python scripts/send_logs.py            # OTLP/HTTP -> http://localhost:4318/v1/logs
 ```
 
-Watch the downstream collector's output — names, emails, IPs, phone numbers,
-credit-card numbers and SSNs will be replaced with `<ENTITY_TYPE>` tags, while
-timestamps, severity and attributes remain intact.
+Inspect the downstream collector's output — in `docker compose logs
+downstream-collector` or `output/received-logs.json` — names, emails, IPs,
+phone numbers, credit-card numbers and SSNs will be replaced with
+`<ENTITY_TYPE>` tags, while timestamps, severity and attributes remain intact.
+
+### Forwarding to Grafana Cloud
+
+The downstream collector can ship the already-redacted logs to Grafana Cloud
+over OTLP/HTTP. Copy the example env file and fill in your stack's OTLP
+credentials (Grafana Cloud Portal → your stack → **OTLP**):
+
+```bash
+cp .env.example .env
+# edit .env: GRAFANA_CLOUD_OTLP_ENDPOINT, GRAFANA_CLOUD_INSTANCE_ID, GRAFANA_CLOUD_API_TOKEN
+docker compose up -d --build downstream-collector
+```
+
+The instance ID is the basic-auth username and a Cloud Access Policy token
+(scope `logs:write`) is the password. `.env` is gitignored, so credentials stay
+out of the repo. View the redacted logs in Grafana Cloud via Explore → your Loki
+data source.
 
 To route through a real **Grafana Alloy** front door — Alloy receives the logs
 (over OTLP *or* the Loki push API) and forwards them to the gateway over
@@ -81,6 +116,7 @@ Everything is set via environment variables (no hardcoded endpoints/secrets).
 | `PRESIDIO_ANALYZER_URL` | `http://presidio-analyzer:3000` | Analyzer endpoint |
 | `PRESIDIO_ANONYMIZER_URL` | `http://presidio-anonymizer:3000` | Anonymizer endpoint |
 | `PRESIDIO_LANGUAGE` | `en` | Analysis language |
+| `PRESIDIO_TIMEOUT` | `10` | Analyzer/anonymizer HTTP request timeout (s) |
 | `REDACT_ENTITIES` | *(all)* | Comma list, e.g. `PERSON,EMAIL_ADDRESS,PHONE_NUMBER,CREDIT_CARD,IP_ADDRESS,US_SSN` |
 | `PRESIDIO_SCORE_THRESHOLD` | `0.0` | Minimum detection confidence |
 | `ANONYMIZE_OPERATOR` | `replace` | `replace` \| `mask` \| `hash` \| `redact` \| `placeholder` |
@@ -140,6 +176,7 @@ gateway/            # the container's application code
   redactor.py       # walks OTLP records, redacts bodies/attributes
   forwarder.py      # OTLP export with fan-out + retry/backoff
   pipeline.py       # receive -> redact -> forward + failure handling
+  metrics.py        # Prometheus metric definitions
   server_grpc.py    # OTLP/gRPC ingestion
   server_http.py    # OTLP/HTTP ingestion + health + metrics
   main.py           # entrypoint
@@ -147,6 +184,7 @@ config/             # compose-stack configs (collector, alloy, sample logs)
 deploy/k8s/         # Kubernetes manifests
 scripts/send_logs.py# OTLP load generator for quick validation
 tests/              # unit tests
+.env.example        # Grafana Cloud OTLP credentials template (copy to .env)
 ```
 
 ## Scope
@@ -156,3 +194,7 @@ This is an MVP targeting the acceptance criteria in
 configured entities, OTLP forwarding to ≥1 downstream, health + metrics, and
 fully externalized configuration. Persistent buffering/queueing, inbound TLS,
 mTLS, and per-tenant policy are noted as future enhancements.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
