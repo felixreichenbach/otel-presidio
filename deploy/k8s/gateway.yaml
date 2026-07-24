@@ -21,7 +21,7 @@ spec:
         runAsUser: 10001
       containers:
         - name: gateway
-          image: ghcr.io/example/presidio-gateway:0.1.0
+          image: otel-presidio-gateway:0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: otlp-grpc

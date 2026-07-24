@@ -42,7 +42,24 @@ Requires a running **metrics-server** for the HPAs, and (for the external
 Before applying, edit the placeholder values:
 - `downstream-collector.yaml` Secret → your Grafana Cloud OTLP endpoint / instance ID / token.
 - `secret.yaml` → gateway `EXPORT_HEADERS` (only if exporting straight to Grafana Cloud instead of via the collector).
-- `gateway.yaml` → the `image:` reference (currently `ghcr.io/example/...`).
+- `gateway.yaml` → the `image:` reference. It defaults to the locally-built
+  `otel-presidio-gateway:0.1.0` (see "Building the gateway image" below). For a
+  remote cluster, push the image to a registry and point this at it.
+
+### Building the gateway image
+
+The gateway is the only custom service; everything else pulls public images.
+Build it from the repo root (`Dockerfile`) straight into your local cluster's
+image store, then it resolves via `imagePullPolicy: IfNotPresent`:
+
+```sh
+# minikube
+minikube image build -t otel-presidio-gateway:0.1.0 .
+
+# Docker Desktop / kind (build with local docker, then load into kind)
+docker build -t otel-presidio-gateway:0.1.0 .
+kind load docker-image otel-presidio-gateway:0.1.0   # kind only
+```
 
 ## Load balancing between services
 
