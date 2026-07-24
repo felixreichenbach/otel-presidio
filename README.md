@@ -12,14 +12,13 @@ Collector, Grafana Cloud, …).
                                  ▲                     │
                      HTTP request│                     │ HTTP response
                      (log bodies)│                     ▼ (redacted text)
-  ┌──────────────┐ OTLP    ┌────────────────────────────────┐ OTLP    ┌───────────────────────┐
-  │ Alloy / OTEL │────────▶│            Gateway             │────────▶│ downstream target(s)  │
-  │ (front door) │ gRPC    │      detect + redact PII       │ fan-out │ (e.g. OTEL Collector) │
-  └──────────────┘         └────────────────────────────────┘         └───────────────────────┘
-         ▲                                                                   │
-   OTLP  │  Loki push                                                        ├──▶ Grafana Cloud
-  clients┘  (via Alloy)                                                      ├──▶ stdout
-                                                                             └──▶ file
+  ┌──────────────┐ OTLP    ┌────────────────────────────────┐        ┌──▶ Grafana Cloud
+  │ Alloy / OTEL │────────▶│            Gateway             │──OTLP──┼──▶ stdout
+  │ (front door) │ gRPC    │      detect + redact PII       │        └──▶ file
+  └──────────────┘         └────────────────────────────────┘
+         ▲
+   OTLP  │  Loki push
+  clients┘  (via Alloy)
 ```
 
 The gateway is a **single container**. Presidio runs as its own two services
