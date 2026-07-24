@@ -33,7 +33,7 @@ class _LogsService(logs_service_pb2_grpc.LogsServiceServicer):
 
 
 def start_grpc_server(cfg: Config, pipeline: Pipeline) -> grpc.Server:
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=cfg.grpc_max_workers))
     logs_service_pb2_grpc.add_LogsServiceServicer_to_server(
         _LogsService(pipeline), server
     )

@@ -67,6 +67,7 @@ class Config:
     grpc_enabled: bool = True
     grpc_host: str = "0.0.0.0"
     grpc_port: int = 4317
+    grpc_max_workers: int = 64  # concurrent gRPC Export calls
     http_enabled: bool = True
     http_host: str = "0.0.0.0"
     http_port: int = 4318
@@ -78,6 +79,7 @@ class Config:
     entities: List[str] = field(default_factory=list)  # empty => all supported
     score_threshold: float = 0.0
     presidio_timeout: float = 5.0
+    presidio_max_connections: int = 100  # httpx pool size for concurrent redaction
 
     # --- Anonymization ---------------------------------------------------
     # operator: replace | mask | hash | redact | placeholder
@@ -116,6 +118,7 @@ class Config:
             grpc_enabled=_get_bool("OTLP_GRPC_ENABLED", True),
             grpc_host=_get("OTLP_GRPC_HOST", "0.0.0.0"),
             grpc_port=_get_int("OTLP_GRPC_PORT", 4317),
+            grpc_max_workers=_get_int("OTLP_GRPC_MAX_WORKERS", 64),
             http_enabled=_get_bool("OTLP_HTTP_ENABLED", True),
             http_host=_get("OTLP_HTTP_HOST", "0.0.0.0"),
             http_port=_get_int("OTLP_HTTP_PORT", 4318),
@@ -125,6 +128,7 @@ class Config:
             entities=_get_list("REDACT_ENTITIES"),
             score_threshold=_get_float("PRESIDIO_SCORE_THRESHOLD", 0.0),
             presidio_timeout=_get_float("PRESIDIO_TIMEOUT", 5.0),
+            presidio_max_connections=_get_int("PRESIDIO_MAX_CONNECTIONS", 100),
             operator=_get("ANONYMIZE_OPERATOR", "replace").lower(),
             placeholder=_get("ANONYMIZE_PLACEHOLDER", "<REDACTED>"),
             masking_char=_get("ANONYMIZE_MASKING_CHAR", "*"),

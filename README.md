@@ -180,11 +180,13 @@ Everything is set via environment variables (no hardcoded endpoints/secrets).
 | Variable | Default | Description |
 |---|---|---|
 | `OTLP_GRPC_ENABLED` / `OTLP_GRPC_HOST` / `OTLP_GRPC_PORT` | `true` / `0.0.0.0` / `4317` | gRPC ingestion |
+| `OTLP_GRPC_MAX_WORKERS` | `64` | Max concurrent gRPC `Export` handlers (thread pool) |
 | `OTLP_HTTP_ENABLED` / `OTLP_HTTP_HOST` / `OTLP_HTTP_PORT` | `true` / `0.0.0.0` / `4318` | HTTP ingestion + health/metrics |
 | `PRESIDIO_ANALYZER_URL` | `http://presidio-analyzer:3000` | Analyzer endpoint |
 | `PRESIDIO_ANONYMIZER_URL` | `http://presidio-anonymizer:3000` | Anonymizer endpoint |
 | `PRESIDIO_LANGUAGE` | `en` | Analysis language |
-| `PRESIDIO_TIMEOUT` | `10` | Analyzer/anonymizer HTTP request timeout (s) |
+| `PRESIDIO_TIMEOUT` | `5` | Analyzer/anonymizer HTTP request timeout (s) |
+| `PRESIDIO_MAX_CONNECTIONS` | `100` | httpx connection-pool size for concurrent Presidio calls |
 | `REDACT_ENTITIES` | *(all)* | Comma list, e.g. `PERSON,EMAIL_ADDRESS,PHONE_NUMBER,CREDIT_CARD,IP_ADDRESS,US_SSN` |
 | `PRESIDIO_SCORE_THRESHOLD` | `0.0` | Minimum detection confidence |
 | `ANONYMIZE_OPERATOR` | `replace` | `replace` \| `mask` \| `hash` \| `redact` \| `placeholder` |
@@ -249,23 +251,90 @@ python scripts/loadtest.py --protocol grpc --concurrency 10 --duration 30 --stat
 
 # open-loop at a fixed rate (reveals queueing / the saturation knee)
 python scripts/loadtest.py --rate 300 --duration 60 --stats
+
+# capacity search: ramp the rate until an SLO breaks, report the max sustainable
+python scripts/loadtest.py --protocol http --ramp --profile json --stats
 ```
+
+`--ramp` steps the arrival rate up (`--ramp-start` × `--ramp-factor` per step,
+up to `--ramp-max`) and stops at the first step that breaches `--slo-p99`
+(default 500 ms) or `--slo-error-rate` (default 1%), or that can't keep up with
+the offered rate — then prints the highest sustainable rate. Prefer it over
+guessing a single `--rate`. Open-loop runs are time-bounded: at the deadline the
+queued backlog is dropped (reported as **shed**) rather than draining for
+minutes, so an over-target run finishes on time instead of hanging.
 
 Things to keep in mind when interpreting results:
 
-- **The Analyzer (spaCy) is the bottleneck** — sample `gateway`,
-  `presidio-analyzer`, and `presidio-anonymizer` separately; the analyzer
-  dominates CPU/memory and latency. Scaling analyzer replicas is the main lever.
+- **The Analyzer (spaCy) is the first bottleneck** — sample `gateway`,
+  `presidio-analyzer`, and `presidio-anonymizer` separately; the analyzer is
+  CPU-bound and defaults to a single worker. Raising `WORKERS` is the main lever
+  (see [Scaling & tuning](#scaling--tuning)).
 - **Payload shape drives cost** — `--profile clean` short-circuits to one
   Presidio call, `dirty` costs two per string, and `json` costs ~2× the field
   count. Latency scales with the number of strings, not records.
-- **Protocol matters** — gRPC uses a 10-thread pool; the OTLP/HTTP path
-  serializes on the event loop. Compare both and sweep `--concurrency`.
+- **Protocol** — both paths are now concurrent (gRPC thread pool
+  `OTLP_GRPC_MAX_WORKERS`; the OTLP/HTTP handler offloads blocking redaction to a
+  thread pool instead of blocking the event loop). Compare both and sweep
+  `--concurrency` / `--rate`.
 - **Warm up and stay in steady state** — the tool waits for `/readyz` and runs
-  an unmeasured `--warmup` window; run ≥30–60s and pin container CPU/mem limits
-  for reproducibility.
+  an unmeasured `--warmup` window; use `≥10s` warmup so every analyzer worker
+  loads its model, and pin container CPU/mem limits for reproducibility.
 - **Don't let the client saturate first** — watch client CPU at high rates; if
   the generator is the limit, the numbers describe it, not the gateway.
+
+## Scaling & tuning
+
+Throughput is gated by a chain of concurrency limits. Raise them in order — each
+fix simply moves the bottleneck to the next stage, so re-measure with `--ramp`
+after every change and watch which container's CPU is actually pegged.
+
+### The bottleneck chain
+
+1. **Presidio Analyzer (usually first).** spaCy NER is CPU-bound and the stock
+   image runs **one** gunicorn worker (~1 core). This is the default ceiling.
+   - `WORKERS` (env on the `presidio-analyzer` service) — gunicorn workers.
+     Each loads its **own ~750 MiB model**, so size to
+     `min(cores to spend, RAM ÷ ~0.8 GiB)`. It's set to `6` in
+     [docker-compose.yml](docker-compose.yml).
+   - For more than one host, run multiple analyzer **replicas** behind a load
+     balancer / Service instead of piling workers onto one box.
+2. **The gateway's downstream concurrency** — how many redactions it runs at once.
+   - `OTLP_GRPC_MAX_WORKERS` (default `64`) — concurrent gRPC `Export` handlers.
+   - The OTLP/HTTP handler offloads blocking redaction to a thread pool (so it no
+     longer serializes on the event loop).
+   - `PRESIDIO_MAX_CONNECTIONS` (default `100`) — httpx pool to Presidio; keep it
+     ≥ the effective in-flight concurrency so connections don't queue.
+3. **The gateway process itself (GIL).** The gateway is a single Python process,
+   so JSON/proto parsing and redaction bookkeeping are GIL-bound and top out
+   around ~1–2 cores no matter how high the pools go. To scale past that, run
+   **multiple gateway replicas** (Compose `deploy.replicas` / a K8s Deployment
+   with `replicas > 1`) behind the OTLP load balancer, rather than one big pod.
+4. **Anonymizer** — lightweight string substitution, rarely the limit; a small
+   `WORKERS` (set to `2`) is plenty.
+
+### Payload & batching
+
+- **Payload shape** dominates cost: latency scales with the number of *strings*,
+  not records. A `json` body costs ~2 Presidio calls per field; a `clean` line
+  costs one. Narrow the work with `REDACT_ENTITIES`, `SCAN_JSON_FIELDS`, or a
+  higher `PRESIDIO_SCORE_THRESHOLD`.
+- **Batch size** (sender-side) amortizes per-request overhead but raises
+  per-batch latency and memory; tune it together with the arrival rate.
+
+### Measured example
+
+Single-host stack (10 cores, 7.75 GiB), `--profile json`, `batch=5`, p99 ≤ 500 ms
+SLO, found with `--ramp`:
+
+| Change | Max sustainable | p99 at load | Bottleneck |
+|---|---|---|---|
+| Baseline (HTTP serialized, analyzer `WORKERS=1`) | ~10 req/s | 5 s+ | Gateway event loop |
+| + gateway HTTP/gRPC/pool concurrency | ~20 req/s | ~100 ms | Analyzer (1 core) |
+| + analyzer `WORKERS=6` | ~31 req/s | ~200 ms | Gateway process (GIL) |
+
+Next lever for this workload is running multiple gateway replicas (step 3).
+Numbers are illustrative — re-run `--ramp` on your own hardware and payload.
 
 ## Project layout
 

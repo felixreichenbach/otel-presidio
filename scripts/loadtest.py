@@ -14,6 +14,9 @@ python scripts/loadtest.py --protocol grpc --concurrency 10 --duration 30 --stat
 # open-loop at 200 req/s for 60s over HTTP with a JSON-heavy payload
 python scripts/loadtest.py --protocol http --rate 200 --duration 60 --profile json
 
+# find the max sustainable rate (ramp until p99/error SLO breaks)
+python scripts/loadtest.py --protocol http --ramp --profile json
+
 # compare a clean (short-circuit) vs dirty (2 calls/string) workload
 python scripts/loadtest.py --profile clean
 python scripts/loadtest.py --profile dirty
@@ -21,6 +24,10 @@ python scripts/loadtest.py --profile dirty
 Notes
 -----
 * Wait for readiness before measuring; a warm-up window is excluded from stats.
+* Open-loop is time-bounded: at the deadline the queued backlog is dropped
+  (reported as "shed") instead of draining for minutes, so an over-target run
+  finishes on time rather than hanging. Use --ramp to discover the sustainable
+  rate rather than guessing --rate.
 * CPU% from `docker stats` is per-core and can exceed 100%; mem includes cache.
 * The server histogram is an average (sum/count), not a percentile -- percentiles
   come from client timings below.
@@ -159,9 +166,15 @@ def closed_loop(sender, concurrency, duration):
     return results, time.perf_counter() - t0
 
 
-def open_loop(sender, rate, duration, max_workers):
+def open_loop(sender, rate, duration, max_workers, drain_grace=5.0):
     """Fixed arrival rate; latency measured from the *scheduled* time too, so
-    queueing under saturation shows up (coordinated-omission-aware)."""
+    queueing under saturation shows up (coordinated-omission-aware).
+
+    Time-bounded: submission stops at ``duration`` and, when the server can't
+    keep up, the queued backlog is dropped rather than drained for minutes.
+    In-flight requests get a ``drain_grace`` window to finish; anything still
+    outstanding after that is reported as *shed* (scheduled but never completed).
+    Returns ``(results, elapsed, shed)``."""
     interval = 1.0 / rate
     n = int(rate * duration)
     results = []
@@ -176,14 +189,33 @@ def open_loop(sender, rate, duration, max_workers):
             results.append((t1 - t0, t1 - sched, ok, code))
 
     start = time.perf_counter()
+    end = start + duration
+    futures = []
     for i in range(n):
         sched = start + i * interval
+        if time.perf_counter() >= end:  # deadline hit; stop scheduling
+            break
         delay = sched - time.perf_counter()
         if delay > 0:
             time.sleep(delay)
-        ex.submit(task, sched)
-    ex.shutdown(wait=True)
-    return results, time.perf_counter() - start
+        futures.append(ex.submit(task, sched))
+    submitted = len(futures)
+
+    # Deadline reached: drop the queued (not-yet-started) backlog instead of
+    # waiting on it, and give running requests a bounded grace to complete.
+    ex.shutdown(wait=False, cancel_futures=True)
+    drain_deadline = time.perf_counter() + drain_grace
+    for f in futures:
+        remaining = drain_deadline - time.perf_counter()
+        if remaining <= 0:
+            break
+        try:
+            f.result(timeout=remaining)
+        except Exception:
+            pass
+    with lock:
+        shed = submitted - len(results)
+    return results, time.perf_counter() - start, shed
 
 
 # --- helpers --------------------------------------------------------------
@@ -272,37 +304,7 @@ def scrape_metrics(url):
 # --- reporting ------------------------------------------------------------
 
 
-def report(results, elapsed, batch_size, open_mode, metrics_delta, stats):
-    total = len(results)
-    ok = [r for r in results if r[2]]
-    errs = [r for r in results if not r[2]]
-    svc = sorted(r[0] * 1000 for r in ok)  # ms
-
-    print("\n=== throughput ===")
-    print(f"requests: {total} ({len(ok)} ok, {len(errs)} error) in {elapsed:.1f}s")
-    if elapsed > 0:
-        print(f"req/s   : {len(ok) / elapsed:8.1f}")
-        print(f"records/s: {len(ok) * batch_size / elapsed:8.1f}")
-    if errs:
-        codes = {}
-        for r in errs:
-            codes[r[3]] = codes.get(r[3], 0) + 1
-        print(f"errors by code: {codes}")
-
-    if svc:
-        print("\n=== response latency (ms, successful requests) ===")
-        for label, p in [("p50", .5), ("p90", .9), ("p95", .95), ("p99", .99)]:
-            print(f"{label}: {pct(svc, p):8.1f}")
-        print(f"max: {svc[-1]:8.1f}   mean: {statistics.fmean(svc):8.1f}")
-
-    if open_mode and ok:
-        sched = sorted(r[1] * 1000 for r in ok if r[1] is not None)
-        if sched:
-            print("\n=== latency since scheduled send (ms) -- includes queueing ===")
-            for label, p in [("p50", .5), ("p95", .95), ("p99", .99)]:
-                print(f"{label}: {pct(sched, p):8.1f}")
-            print(f"max: {sched[-1]:8.1f}")
-
+def report_resources(metrics_delta, stats):
     if metrics_delta:
         d = metrics_delta
         print("\n=== gateway /metrics (delta over run) ===")
@@ -329,6 +331,89 @@ def report(results, elapsed, batch_size, open_mode, metrics_delta, stats):
                   f"{statistics.fmean(mems):9.0f}/{max(mems):<9.0f}")
 
 
+def report(results, elapsed, batch_size, open_mode, metrics_delta, stats, shed=0):
+    total = len(results)
+    ok = [r for r in results if r[2]]
+    errs = [r for r in results if not r[2]]
+    svc = sorted(r[0] * 1000 for r in ok)  # ms
+
+    print("\n=== throughput ===")
+    print(f"requests: {total} ({len(ok)} ok, {len(errs)} error) in {elapsed:.1f}s")
+    if shed:
+        print(f"shed    : {shed} (scheduled but dropped/unfinished at deadline "
+              f"-- server could not keep up)")
+    if elapsed > 0:
+        print(f"req/s   : {len(ok) / elapsed:8.1f}")
+        print(f"records/s: {len(ok) * batch_size / elapsed:8.1f}")
+    if errs:
+        codes = {}
+        for r in errs:
+            codes[r[3]] = codes.get(r[3], 0) + 1
+        print(f"errors by code: {codes}")
+
+    if svc:
+        print("\n=== response latency (ms, successful requests) ===")
+        for label, p in [("p50", .5), ("p90", .9), ("p95", .95), ("p99", .99)]:
+            print(f"{label}: {pct(svc, p):8.1f}")
+        print(f"max: {svc[-1]:8.1f}   mean: {statistics.fmean(svc):8.1f}")
+
+    if open_mode and ok:
+        sched = sorted(r[1] * 1000 for r in ok if r[1] is not None)
+        if sched:
+            print("\n=== latency since scheduled send (ms) -- includes queueing ===")
+            for label, p in [("p50", .5), ("p95", .95), ("p99", .99)]:
+                print(f"{label}: {pct(sched, p):8.1f}")
+            print(f"max: {sched[-1]:8.1f}")
+
+    report_resources(metrics_delta, stats)
+
+
+# --- capacity search ------------------------------------------------------
+
+
+def ramp(sender, args):
+    """Staircase load: step the arrival rate up until an SLO breaks, then stop.
+
+    Each step runs a bounded ``open_loop`` for ``step_duration`` seconds and is
+    judged against the p99-latency and error-rate SLOs. The last step that
+    stayed within SLO *and* achieved its offered rate is the reported sustainable
+    throughput. Returns that rate (0.0 if even the first step failed)."""
+    max_workers = max(args.concurrency, 64)
+    sustainable = 0.0
+    rate = args.ramp_start
+    print("\n=== capacity search (ramp) ===")
+    print(f"slo: p99 <= {args.slo_p99:.0f} ms, error rate <= {args.slo_error_rate:.1%}, "
+          f"steps of {args.step_duration:.0f}s, factor x{args.ramp_factor:g}, "
+          f"max {args.ramp_max:g} req/s")
+    print(f"{'rate':>8} {'achieved':>10} {'p99 ms':>10} {'err%':>8} {'shed':>8}  verdict")
+
+    while rate <= args.ramp_max:
+        results, elapsed, shed = open_loop(sender, rate, args.step_duration,
+                                           max_workers, args.drain_grace)
+        ok = [r for r in results if r[2]]
+        total = len(results)
+        err_rate = (total - len(ok)) / total if total else 1.0
+        svc = sorted(r[0] * 1000 for r in ok)
+        p99 = pct(svc, .99) if svc else float("inf")
+        achieved = len(ok) / elapsed if elapsed > 0 else 0.0
+        # "kept up" = achieved offered rate within 5% and shed a negligible tail.
+        kept_up = achieved >= rate * 0.95 and shed <= max(1, 0.01 * total)
+        within_slo = p99 <= args.slo_p99 and err_rate <= args.slo_error_rate
+        ok_step = kept_up and within_slo
+        verdict = "ok" if ok_step else (
+            "SLO breach" if not within_slo else "cannot keep up")
+        print(f"{rate:8.0f} {achieved:10.1f} {p99:10.1f} {err_rate:8.1%} "
+              f"{shed:8d}  {verdict}")
+        if not ok_step:
+            break
+        sustainable = rate
+        rate *= args.ramp_factor
+
+    print(f"\nmax sustainable rate: {sustainable:.0f} req/s "
+          f"({sustainable * args.batch_size:.0f} records/s at batch={args.batch_size})")
+    return sustainable
+
+
 # --- main -----------------------------------------------------------------
 
 
@@ -345,6 +430,18 @@ def main():
     ap.add_argument("--duration", type=float, default=30.0)
     ap.add_argument("--warmup", type=float, default=5.0)
     ap.add_argument("--timeout", type=float, default=30.0)
+    ap.add_argument("--drain-grace", type=float, default=5.0,
+                    help="open-loop: seconds to let in-flight requests finish "
+                         "after the deadline before dropping the backlog")
+    # Capacity search: ramp the rate until an SLO breaks, report the max sustainable.
+    ap.add_argument("--ramp", action="store_true",
+                    help="staircase capacity search instead of a single run")
+    ap.add_argument("--ramp-start", type=float, default=10.0, help="ramp: first rate (req/s)")
+    ap.add_argument("--ramp-factor", type=float, default=2.0, help="ramp: rate multiplier per step")
+    ap.add_argument("--ramp-max", type=float, default=2000.0, help="ramp: stop after this rate")
+    ap.add_argument("--step-duration", type=float, default=15.0, help="ramp: seconds per step")
+    ap.add_argument("--slo-p99", type=float, default=500.0, help="ramp: p99 latency SLO (ms)")
+    ap.add_argument("--slo-error-rate", type=float, default=0.01, help="ramp: max error fraction")
     ap.add_argument("--stats", action="store_true", help="sample docker stats")
     ap.add_argument("--stats-interval", type=float, default=1.0)
     ap.add_argument("--containers", default="gateway,analyzer,anonymizer",
@@ -370,9 +467,15 @@ def main():
         target = http_url
 
     open_mode = args.rate > 0
-    mode = f"open-loop {args.rate} req/s" if open_mode else f"closed-loop x{args.concurrency}"
+    if args.ramp:
+        mode = f"ramp {args.ramp_start:g}->{args.ramp_max:g} req/s x{args.ramp_factor:g}"
+    elif open_mode:
+        mode = f"open-loop {args.rate} req/s"
+    else:
+        mode = f"closed-loop x{args.concurrency}"
+    dur = f"step={args.step_duration}s" if args.ramp else f"duration={args.duration}s"
     print(f"target={target} protocol={args.protocol} profile={args.profile} "
-          f"batch={args.batch_size} mode={mode} duration={args.duration}s")
+          f"batch={args.batch_size} mode={mode} {dur}")
 
     # Warm-up (unmeasured): loads the spaCy model, opens connections.
     if args.warmup > 0:
@@ -395,11 +498,16 @@ def main():
             print("no matching containers for docker stats")
     before = scrape_metrics(metrics_url)
 
-    if open_mode:
-        results, elapsed = open_loop(sender, args.rate, args.duration,
-                                     max_workers=max(args.concurrency, 64))
+    run = None
+    if args.ramp:
+        ramp(sender, args)
+    elif open_mode:
+        run = open_loop(sender, args.rate, args.duration,
+                        max_workers=max(args.concurrency, 64),
+                        drain_grace=args.drain_grace)
     else:
         results, elapsed = closed_loop(sender, args.concurrency, args.duration)
+        run = (results, elapsed, 0)
 
     after = scrape_metrics(metrics_url)
     if sampler:
@@ -407,7 +515,11 @@ def main():
         sampler.join()
 
     delta = {k: after.get(k, 0) - before.get(k, 0) for k in after} if before else after
-    report(results, elapsed, args.batch_size, open_mode, delta, samples)
+    if run is None:  # ramp mode prints its own per-step table above
+        report_resources(delta, samples)
+    else:
+        results, elapsed, shed = run
+        report(results, elapsed, args.batch_size, open_mode, delta, samples, shed)
 
 
 if __name__ == "__main__":

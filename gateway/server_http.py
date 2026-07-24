@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from google.protobuf.json_format import MessageToDict, Parse
 from opentelemetry.proto.collector.logs.v1 import logs_service_pb2
 
@@ -67,7 +68,11 @@ def create_app(
 
             resp = logs_service_pb2.ExportLogsServiceResponse()
             try:
-                pipeline.process(req)
+                # pipeline.process is synchronous/blocking (sequential Presidio
+                # HTTP calls). Offload it to the threadpool so it does not block
+                # the event loop -- otherwise the gateway serves one request at
+                # a time regardless of client concurrency.
+                await run_in_threadpool(pipeline.process, req)
             except PresidioUnavailable as exc:
                 return _error(503, f"presidio unavailable: {exc}", is_json)
             except ExportError as exc:
