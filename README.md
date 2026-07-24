@@ -235,6 +235,38 @@ operator mapping, body/JSON/attribute redaction, metadata preservation, and the
 three failure modes. Integration behaviour (Alloy → gateway → collector,
 Presidio-down, downstream-down) is exercised through the Compose stack above.
 
+## Load testing
+
+[scripts/loadtest.py](scripts/loadtest.py) drives OTLP batches at a running
+stack and reports latency percentiles, throughput, and — with `--stats` —
+per-container CPU/memory (`docker stats`) plus the gateway's `/metrics` deltas.
+
+```bash
+docker compose up -d --build          # stack must be running
+
+# closed-loop: 10 concurrent gRPC senders for 30s, with container stats
+python scripts/loadtest.py --protocol grpc --concurrency 10 --duration 30 --stats
+
+# open-loop at a fixed rate (reveals queueing / the saturation knee)
+python scripts/loadtest.py --rate 300 --duration 60 --stats
+```
+
+Things to keep in mind when interpreting results:
+
+- **The Analyzer (spaCy) is the bottleneck** — sample `gateway`,
+  `presidio-analyzer`, and `presidio-anonymizer` separately; the analyzer
+  dominates CPU/memory and latency. Scaling analyzer replicas is the main lever.
+- **Payload shape drives cost** — `--profile clean` short-circuits to one
+  Presidio call, `dirty` costs two per string, and `json` costs ~2× the field
+  count. Latency scales with the number of strings, not records.
+- **Protocol matters** — gRPC uses a 10-thread pool; the OTLP/HTTP path
+  serializes on the event loop. Compare both and sweep `--concurrency`.
+- **Warm up and stay in steady state** — the tool waits for `/readyz` and runs
+  an unmeasured `--warmup` window; run ≥30–60s and pin container CPU/mem limits
+  for reproducibility.
+- **Don't let the client saturate first** — watch client CPU at high rates; if
+  the generator is the limit, the numbers describe it, not the gateway.
+
 ## Project layout
 
 ```
@@ -251,6 +283,7 @@ gateway/            # the container's application code
 config/             # compose-stack configs (collector, alloy, sample logs)
 deploy/k8s/         # Kubernetes manifests
 scripts/send_logs.py# OTLP load generator for quick validation
+scripts/loadtest.py # latency + CPU/memory load test
 tests/              # unit tests
 .env.example        # Grafana Cloud OTLP credentials template (copy to .env)
 ```
