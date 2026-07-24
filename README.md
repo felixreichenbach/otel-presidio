@@ -49,11 +49,26 @@ Watch the downstream collector's output — names, emails, IPs, phone numbers,
 credit-card numbers and SSNs will be replaced with `<ENTITY_TYPE>` tags, while
 timestamps, severity and attributes remain intact.
 
-To instead drive traffic with a real **Grafana Alloy** source tailing a file:
+To route through a real **Grafana Alloy** front door — Alloy receives the logs
+(over OTLP *or* the Loki push API) and forwards them to the gateway over
+OTLP/gRPC:
 
 ```bash
 docker compose --profile alloy up --build
+
+# via OTLP/HTTP
+python scripts/send_logs.py http://localhost:4328/v1/logs   # -> Alloy -> gateway -> collector
+
+# via the Loki push API
+curl -H "Content-Type: application/json" http://localhost:3100/loki/api/v1/push \
+  -d '{"streams":[{"stream":{"service_name":"demo"},"values":[["'"$(date +%s)"'000000000","User John Smith john.smith@example.com from 192.168.1.24"]]}]}'
 ```
+
+Alloy listens for OTLP on host ports `4327` (gRPC) and `4328` (HTTP), for Loki
+push on `3100`, and its UI is at `http://localhost:12345`.
+
+> With no argument `send_logs.py` targets the gateway directly (`:4318`),
+> bypassing Alloy; pass the `:4328` endpoint to route through Alloy.
 
 ## Configuration
 

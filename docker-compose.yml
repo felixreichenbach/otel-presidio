@@ -53,9 +53,14 @@ services:
     ports:
       - "14317:4317"
 
-  # --- Optional Alloy source (profile: alloy) ---------------------------
-  # Sends a sample log file to the gateway over OTLP. Enable with:
-  #   docker compose --profile alloy up
+  # --- Optional Alloy front door (profile: alloy) -----------------------
+  # Receives logs over OTLP or the Loki push API and forwards them to the
+  # gateway over OTLP/gRPC.  Enable with:  docker compose --profile alloy up
+  # Send test logs through Alloy over OTLP/HTTP (host port 4328):
+  #   python scripts/send_logs.py http://localhost:4328/v1/logs
+  # Or push a logline over the Loki API (host port 3100):
+  #   curl -H "Content-Type: application/json" http://localhost:3100/loki/api/v1/push \
+  #     -d '{"streams":[{"stream":{"service_name":"demo"},"values":[["'"$(date +%s)"'000000000","User John Smith john.smith@example.com from 192.168.1.24"]]}]}'
   alloy-source:
     image: grafana/alloy:latest
     profiles: ["alloy"]
@@ -65,8 +70,10 @@ services:
       - --server.http.listen-addr=0.0.0.0:12345
     volumes:
       - ./config/alloy-source.alloy:/etc/alloy/config.alloy:ro
-      - ./config/sample-logs.log:/var/log/sample-logs.log:ro
     ports:
-      - "12345:12345"
+      - "12345:12345"     # Alloy UI
+      - "4327:4317"       # OTLP/gRPC ingest
+      - "4328:4318"       # OTLP/HTTP ingest
+      - "3100:3100"       # Loki push API ingest
     depends_on:
       - gateway
