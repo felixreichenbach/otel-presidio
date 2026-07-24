@@ -13,6 +13,15 @@ resources:
   - presidio-anonymizer.yaml
   - downstream-collector.yaml
 
+# Grafana Cloud OTLP credentials for the downstream collector, read from the
+# gitignored grafana-cloud.env (copy grafana-cloud.env.example to create it).
+# Kustomize appends a content hash to the Secret name and rewrites the
+# collector's secretRef, so editing the creds triggers an automatic rollout.
+secretGenerator:
+  - name: downstream-collector-secrets
+    envs:
+      - grafana-cloud.env
+
 labels:
   - pairs:
       app.kubernetes.io/part-of: otel-presidio
