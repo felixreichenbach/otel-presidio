@@ -48,6 +48,12 @@ services:
   downstream-collector:
     image: otel/opentelemetry-collector-contrib:0.111.0
     command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      # Grafana Cloud OTLP endpoint + credentials (see config/otel-collector.yaml).
+      # Set these in your shell or a .env file next to this compose file.
+      GRAFANA_CLOUD_OTLP_ENDPOINT: ${GRAFANA_CLOUD_OTLP_ENDPOINT}
+      GRAFANA_CLOUD_INSTANCE_ID: ${GRAFANA_CLOUD_INSTANCE_ID}
+      GRAFANA_CLOUD_API_TOKEN: ${GRAFANA_CLOUD_API_TOKEN}
     volumes:
       - ./config/otel-collector.yaml:/etc/otelcol/config.yaml:ro
       - ./output:/output
