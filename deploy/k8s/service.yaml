@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: presidio-gateway
+  labels:
+    app: presidio-gateway
+spec:
+  selector:
+    app: presidio-gateway
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http

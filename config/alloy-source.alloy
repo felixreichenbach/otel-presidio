@@ -1,0 +1,27 @@
+// Example Grafana Alloy source: tail a log file and ship each line to the
+// gateway over OTLP/gRPC. Enable with:  docker compose --profile alloy up
+
+local.file_match "sample" {
+  path_targets = [{ "__path__" = "/var/log/sample-logs.log" }]
+}
+
+loki.source.file "sample" {
+  targets    = local.file_match.sample.targets
+  forward_to = [otelcol.receiver.loki.default.receiver]
+}
+
+// Bridge the Loki-style log entries into OTLP log records.
+otelcol.receiver.loki "default" {
+  output {
+    logs = [otelcol.exporter.otlp.gateway.input]
+  }
+}
+
+otelcol.exporter.otlp "gateway" {
+  client {
+    endpoint = "gateway:4317"
+    tls {
+      insecure = true
+    }
+  }
+}

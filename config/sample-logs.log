@@ -1,0 +1,6 @@
+User John Smith logged in from 192.168.1.24 using john.smith@example.com
+Payment processed for card 4111111111111111 by customer Maria Garcia
+Support call from +1 (212) 555-0182 regarding account of David Lee
+SSN 078-05-1120 submitted during onboarding for Priya Patel
+{"event":"login","user":"alice@corp.io","ip":"10.0.4.9","name":"Alice Nguyen"}
+Health check ok, latency=12ms, status=200

@@ -1,7 +1,8 @@
 # Requirements: Presidio Log Redaction Gateway via OpenTelemetry
 
 ## 1. Project Goal
-Build a containerized gateway around Microsoft Presidio (https://presidio.dataprivacystack.org/) that receives log data from Grafana Alloy or an OTEL collector, redacts sensitive data using Presidio, and forwards sanitized logs downstream.
+Build a containerized gateway wrapping Microsoft Presidio (https://presidio.dataprivacystack.org/) that receives log data via OTEL API, redacts sensitive data using Presidio, and forwards sanitized loglines downstream via OTEL API.
+It should be a single container.
 
 ## 2. Problem Statement
 Teams need to remove PII and sensitive entities from logs before forwarding to observability backends.
