@@ -50,6 +50,7 @@ services:
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ./config/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+      - ./output:/output
     ports:
       - "14317:4317"
 

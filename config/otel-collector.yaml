@@ -15,10 +15,12 @@ processors:
 exporters:
   debug:
     verbosity: detailed
+  file:
+    path: /output/received-logs.json
 
 service:
   pipelines:
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [debug, file]
