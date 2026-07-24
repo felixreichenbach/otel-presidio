@@ -6,23 +6,26 @@ before forwarding them to any OTLP-compatible backend (Grafana Alloy, OTEL
 Collector, Grafana Cloud, …).
 
 ```
-                           ┌────────────────────────────────┐
-                           │ Presidio Analyzer + Anonymizer │
-                           └────────────────────────────────┘
-                                 ▲                     │
-                     HTTP request│                     │ HTTP response
-                     (log bodies)│                     ▼ (redacted text)
-  ┌──────────────┐ OTLP    ┌────────────────────────────────┐        ┌──▶ Grafana Cloud
-  │ Alloy / OTEL │────────▶│            Gateway             │──OTLP──┼──▶ stdout
-  │ (front door) │ gRPC    │      detect + redact PII       │        └──▶ file
-  └──────────────┘         └────────────────────────────────┘
+                             ┌──────────────┐      ┌────────────────┐
+                             │   Analyzer   │      │   Anonymizer   │
+                             └──────────────┘      └────────────────┘
+                                ▲         │           ▲         │
+                              1 │         │ 2       3 │         │ 4
+                                │         ▼           │         ▼
+  ┌──────────────┐ OTLP    ┌────────────────────────────────────────┐        ┌──▶ Grafana Cloud
+  │ Alloy / OTEL │────────▶│                Gateway                 │──OTLP──┼──▶ stdout
+  │ (front door) │ gRPC    │          detect + redact PII           │        └──▶ file
+  └──────────────┘         └────────────────────────────────────────┘
          ▲
    OTLP  │  Loki push
   clients┘  (via Alloy)
 ```
 
-The gateway is a **single container**. Presidio runs as its own two services
-(Analyzer + Anonymizer), reached over HTTP at configurable endpoints.
+The gateway is a **single container**. Presidio runs as its own two services,
+each reached over HTTP at a configurable endpoint: the gateway calls the
+**Analyzer** to locate sensitive spans (1 request → 2 entities) and then the
+**Anonymizer** to rewrite them (3 request → 4 redacted text). See
+[How redaction works](#how-redaction-works) for the payloads.
 
 ## What it does
 
@@ -44,6 +47,71 @@ The gateway is a **single container**. Presidio runs as its own two services
   when every downstream target fails.
 - Exposes `/healthz` (liveness), `/readyz` (Presidio reachability), and
   Prometheus `/metrics`.
+
+## How redaction works
+
+The gateway is the orchestrator. For every string it extracts from a log body
+or attribute it makes two REST calls — first to the Presidio **Analyzer** to
+locate sensitive spans, then to the **Anonymizer** to rewrite them. The two
+Presidio services never talk to each other; the gateway carries the analyzer's
+results into the anonymizer request.
+
+```
+For each string value in a log body / attribute:
+
+  Gateway ──① POST /analyze  {text, language, entities?} ──────▶  Analyzer  (spaCy NLP)
+  Gateway ◀── ② [{entity_type, start, end, score}, ...] ────────  Analyzer
+
+     └─ no entities found → keep the text unchanged, skip ③–④  (1 call total)
+
+  Gateway ──③ POST /anonymize  {text, anonymizers, analyzer_results} ─▶  Anonymizer
+  Gateway ◀── ④ {text: "…redacted…"} ─────────────────────────────────  Anonymizer
+```
+
+**① Analyze** — find *where* the entities are:
+
+```jsonc
+POST http://presidio-analyzer:3000/analyze
+{
+  "text": "User John Smith from john@example.com",
+  "language": "en",
+  "entities": ["PERSON", "EMAIL_ADDRESS", ...],   // only when REDACT_ENTITIES is set
+  "score_threshold": 0.5                           // only when > 0
+}
+→ [ {"entity_type": "PERSON",        "start": 5,  "end": 15, "score": 0.85},
+    {"entity_type": "EMAIL_ADDRESS", "start": 21, "end": 37, "score": 1.0 } ]
+```
+
+**② Anonymize** — rewrite *those* spans. The gateway forwards the analyzer
+results verbatim plus the operator map, built once at startup from
+`ANONYMIZE_OPERATOR` (the `DEFAULT` key applies to every entity type):
+
+```jsonc
+POST http://presidio-anonymizer:3000/anonymize
+{
+  "text": "User John Smith from john@example.com",
+  "anonymizers": { "DEFAULT": { "type": "replace" } },
+  "analyzer_results": [ {entity_type, start, end, score}, ... ]
+}
+→ { "text": "User <PERSON> from <EMAIL_ADDRESS>" }
+```
+
+Key points:
+
+- **Endpoints** are `PRESIDIO_ANALYZER_URL` / `PRESIDIO_ANONYMIZER_URL`
+  (Docker-DNS service names by default), reached over HTTP with a shared,
+  connection-pooled client bounded by `PRESIDIO_TIMEOUT`.
+- **Short-circuit:** if the analyzer finds nothing, the anonymize call is
+  skipped and the text is returned unchanged — clean strings cost one call,
+  strings with PII cost two. Empty/whitespace strings cost none.
+- **Stateless:** the anonymizer does no detection of its own; it relies on the
+  byte offsets from the analyzer, which is why the gateway passes them through.
+- **Two calls per string, sequential** — and the redactor runs this once per
+  string field, so a JSON body with K string fields makes up to 2K sequential
+  calls. Redaction latency scales with the number of strings, not records.
+- **Errors** (network or non-2xx) raise a Presidio error handled per
+  `FAIL_MODE` (reject / drop / passthrough). A separate `GET /health` against
+  both services backs `/readyz`.
 
 ## Quick start (Docker Compose)
 
