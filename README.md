@@ -1,4 +1,4 @@
-# Presidio Log Redaction Gateway
+# Presidio OTEL (logs for now) Redaction Gateway
 
 An OTLP-in / OTLP-out gateway that strips PII and other sensitive entities from
 log records using [Microsoft Presidio](https://presidio.dataprivacystack.org/)
