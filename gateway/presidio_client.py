@@ -47,7 +47,15 @@ class PresidioClient:
         self.language = cfg.language
         self.score_threshold = cfg.score_threshold
         self.anonymizers = build_anonymizers(cfg)
-        self._client = httpx.Client(timeout=cfg.presidio_timeout)
+        # Sized for concurrent redaction: the default httpx keepalive cap (20)
+        # would throttle throughput once many requests hit Presidio at once.
+        self._client = httpx.Client(
+            timeout=cfg.presidio_timeout,
+            limits=httpx.Limits(
+                max_connections=cfg.presidio_max_connections,
+                max_keepalive_connections=cfg.presidio_max_connections,
+            ),
+        )
 
     def close(self) -> None:
         self._client.close()

@@ -5,6 +5,11 @@ services:
     image: mcr.microsoft.com/presidio-analyzer:latest
     ports:
       - "5001:3000"
+    environment:
+      # gunicorn workers -- the analyzer is CPU-bound (spaCy NER) and defaults
+      # to a single worker (~1 core). Each worker loads its own ~750 MiB model,
+      # so size to (cores to spend) vs (available RAM). See README "Scaling".
+      WORKERS: "6"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:3000/health'); sys.exit(0)"]
       interval: 10s
@@ -15,6 +20,10 @@ services:
     image: mcr.microsoft.com/presidio-anonymizer:latest
     ports:
       - "5002:3000"
+    environment:
+      # Anonymizer is lightweight (string substitution, no ML model); a small
+      # bump is plenty -- it is rarely the bottleneck.
+      WORKERS: "2"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:3000/health'); sys.exit(0)"]
       interval: 10s
