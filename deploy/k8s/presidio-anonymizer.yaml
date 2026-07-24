@@ -1,0 +1,94 @@
+# Presidio Anonymizer -- lightweight string substitution, no ML model.
+# Rarely the bottleneck, so it gets modest resources and a smaller HPA ceiling.
+# Plain HTTP again, so the ClusterIP Service load-balances per request.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: presidio-anonymizer
+  labels:
+    app: presidio-anonymizer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: presidio-anonymizer
+  template:
+    metadata:
+      labels:
+        app: presidio-anonymizer
+    spec:
+      containers:
+        - name: anonymizer
+          image: mcr.microsoft.com/presidio-anonymizer:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # One worker matches the 500m CPU limit (2 workers would contend
+            # for half a core). Scale by pod via the HPA, not by workers.
+            - name: WORKERS
+              value: "1"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: presidio-anonymizer
+  labels:
+    app: presidio-anonymizer
+spec:
+  type: ClusterIP
+  selector:
+    app: presidio-anonymizer
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: presidio-anonymizer
+  labels:
+    app: presidio-anonymizer
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: presidio-anonymizer
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300

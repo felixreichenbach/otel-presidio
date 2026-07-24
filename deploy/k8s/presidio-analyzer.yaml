@@ -1,0 +1,107 @@
+# Presidio Analyzer -- the CPU-bound spaCy NER service.
+#
+# Scaling model (differs from docker-compose): in Kubernetes we scale
+# *horizontally by pod*, not by gunicorn workers inside one pod. So WORKERS is
+# pinned to "1" (one ~750 MiB model per pod, ~1 core) and the HPA adds pods
+# under CPU pressure. The ClusterIP Service below is the load balancer: because
+# the analyzer speaks plain HTTP (one request per call, no long-lived stream),
+# kube-proxy spreads requests across all Ready pods per-connection.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: presidio-analyzer
+  labels:
+    app: presidio-analyzer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: presidio-analyzer
+  template:
+    metadata:
+      labels:
+        app: presidio-analyzer
+    spec:
+      containers:
+        - name: analyzer
+          image: mcr.microsoft.com/presidio-analyzer:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: WORKERS
+              value: "1"
+          # The model takes a while to load; give the pod room to warm up
+          # before liveness kicks in, and gate traffic on readiness.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60      # up to ~5 min to become ready
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"        # ~750 MiB model + overhead
+            limits:
+              # WORKERS=1 + single-threaded spaCy tops out near ~1 core,
+              # so a 2-core limit was unreachable headroom.
+              cpu: "1"
+              memory: "2Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: presidio-analyzer
+  labels:
+    app: presidio-analyzer
+spec:
+  type: ClusterIP
+  selector:
+    app: presidio-analyzer
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: presidio-analyzer
+  labels:
+    app: presidio-analyzer
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: presidio-analyzer
+  # Sized for a single-node (laptop) cluster. Bump both for a real cluster;
+  # remember each extra pod needs its own ~750 MiB model in RAM.
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300

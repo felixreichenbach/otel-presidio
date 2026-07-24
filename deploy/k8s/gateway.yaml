@@ -1,0 +1,123 @@
+# Presidio redaction gateway -- the OTLP ingest front door that scrubs PII
+# before forwarding downstream. Stateless, so it scales cleanly by replica.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: presidio-gateway
+  labels:
+    app: presidio-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: presidio-gateway
+  template:
+    metadata:
+      labels:
+        app: presidio-gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: gateway
+          image: otel-presidio-gateway:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+          envFrom:
+            - configMapRef:
+                name: presidio-gateway-config
+            - secretRef:
+                name: presidio-gateway-secrets
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: otlp-http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: otlp-http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+---
+# Internal Service: in-cluster clients (e.g. an Alloy DaemonSet) reach the
+# gateway here. HTTP ingest (4318) load-balances per request; gRPC ingest
+# (4317) is a long-lived HTTP/2 stream that kube-proxy pins to one pod per
+# connection -- with several gateway replicas, many senders still spread out.
+# For strict per-request gRPC balancing, front it with a mesh / L7 proxy.
+apiVersion: v1
+kind: Service
+metadata:
+  name: presidio-gateway
+  labels:
+    app: presidio-gateway
+spec:
+  type: ClusterIP
+  selector:
+    app: presidio-gateway
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+---
+# External Service: cloud L4 load balancer for ingest from outside the cluster.
+# Swap for an Ingress/Gateway API resource if you terminate TLS at an L7 edge.
+apiVersion: v1
+kind: Service
+metadata:
+  name: presidio-gateway-lb
+  labels:
+    app: presidio-gateway
+spec:
+  type: LoadBalancer
+  selector:
+    app: presidio-gateway
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: presidio-gateway
+  labels:
+    app: presidio-gateway
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: presidio-gateway
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300
