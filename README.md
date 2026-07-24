@@ -6,22 +6,20 @@ before forwarding them to any OTLP-compatible backend (Grafana Alloy, OTEL
 Collector, Grafana Cloud, …).
 
 ```
-                              ┌──────────────────────────────────┐
-                              │  Presidio Analyzer + Anonymizer    │
-                              └──────────────────────────────────┘
-                                  ▲                         │
-                          request │  HTTP              HTTP │ response
-                          (bodies)│                         │ (redacted text)
-                                  │                         ▼
-  ┌──────────────┐  OTLP   ┌──────────────────────────┐  OTLP   ┌───────────────────────┐
-  │ Alloy / OTEL │────────▶│          Gateway          │────────▶│  downstream target(s)  │
-  │ (front door) │  gRPC   │    detect + redact PII    │ fan-out │                        │
-  └──────────────┘         └──────────────────────────┘         └───────────────────────┘
+                           ┌────────────────────────────────┐
+                           │ Presidio Analyzer + Anonymizer │
+                           └────────────────────────────────┘
+                                 ▲                     │
+                     HTTP request│                     │ HTTP response
+                     (log bodies)│                     ▼ (redacted text)
+  ┌──────────────┐ OTLP    ┌────────────────────────────────┐ OTLP    ┌───────────────────────┐
+  │ Alloy / OTEL │────────▶│            Gateway             │────────▶│ downstream target(s)  │
+  │ (front door) │ gRPC    │      detect + redact PII       │ fan-out │ (e.g. OTEL Collector) │
+  └──────────────┘         └────────────────────────────────┘         └───────────────────────┘
          ▲                                                                   │
-   OTLP  │  Loki push                                          ┌─────────────┼─────────────┐
-  clients┘  (via Alloy)                                        ▼             ▼             ▼
-                                                          Grafana Cloud    stdout    received-logs.json
-                                                          (OTLP/HTTP)     (debug)         (file)
+   OTLP  │  Loki push                                                        ├──▶ Grafana Cloud
+  clients┘  (via Alloy)                                                      ├──▶ stdout
+                                                                             └──▶ file
 ```
 
 The gateway is a **single container**. Presidio runs as its own two services
