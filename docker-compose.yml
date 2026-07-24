@@ -1,0 +1,80 @@
+name: loki-presidio
+
+services:
+  presidio-analyzer:
+    image: mcr.microsoft.com/presidio-analyzer:latest
+    ports:
+      - "5001:3000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:3000/health'); sys.exit(0)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  presidio-anonymizer:
+    image: mcr.microsoft.com/presidio-anonymizer:latest
+    ports:
+      - "5002:3000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://localhost:3000/health'); sys.exit(0)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  gateway:
+    build: .
+    ports:
+      - "4317:4317"   # OTLP/gRPC ingest
+      - "4318:4318"   # OTLP/HTTP ingest + /healthz /readyz /metrics
+    environment:
+      PRESIDIO_ANALYZER_URL: http://presidio-analyzer:3000
+      PRESIDIO_ANONYMIZER_URL: http://presidio-anonymizer:3000
+      REDACT_ENTITIES: "PERSON,EMAIL_ADDRESS,PHONE_NUMBER,CREDIT_CARD,IP_ADDRESS,US_SSN"
+      ANONYMIZE_OPERATOR: replace
+      SCAN_JSON: "true"
+      EXPORT_PROTOCOL: grpc
+      EXPORT_ENDPOINTS: "downstream-collector:4317"
+      EXPORT_INSECURE: "true"
+      FAIL_MODE: reject
+      LOG_LEVEL: INFO
+    depends_on:
+      presidio-analyzer:
+        condition: service_healthy
+      presidio-anonymizer:
+        condition: service_healthy
+
+  # Downstream OTLP receiver -- stands in for a second Alloy / Grafana Cloud.
+  # Prints received (already-redacted) logs so you can verify the pipeline.
+  downstream-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./config/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+      - ./output:/output
+    ports:
+      - "14317:4317"
+
+  # --- Optional Alloy front door (profile: alloy) -----------------------
+  # Receives logs over OTLP or the Loki push API and forwards them to the
+  # gateway over OTLP/gRPC.  Enable with:  docker compose --profile alloy up
+  # Send test logs through Alloy over OTLP/HTTP (host port 4328):
+  #   python scripts/send_logs.py http://localhost:4328/v1/logs
+  # Or push a logline over the Loki API (host port 3100):
+  #   curl -H "Content-Type: application/json" http://localhost:3100/loki/api/v1/push \
+  #     -d '{"streams":[{"stream":{"service_name":"demo"},"values":[["'"$(date +%s)"'000000000","User John Smith john.smith@example.com from 192.168.1.24"]]}]}'
+  alloy-source:
+    image: grafana/alloy:latest
+    profiles: ["alloy"]
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --server.http.listen-addr=0.0.0.0:12345
+    volumes:
+      - ./config/alloy-source.alloy:/etc/alloy/config.alloy:ro
+    ports:
+      - "12345:12345"     # Alloy UI
+      - "4327:4317"       # OTLP/gRPC ingest
+      - "4328:4318"       # OTLP/HTTP ingest
+      - "3100:3100"       # Loki push API ingest
+    depends_on:
+      - gateway

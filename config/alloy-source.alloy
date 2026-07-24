@@ -1,0 +1,53 @@
+// Grafana Alloy front door: accept logs over OTLP *and* the Loki push API,
+// then forward everything to the redaction gateway over OTLP/gRPC.
+// Enable with:  docker compose --profile alloy up
+//
+// Flow:  client --OTLP------------------> Alloy --OTLP/gRPC--> gateway:4317 --> downstream
+//        client --Loki push--> [Loki->OTLP bridge] --^
+//
+// Listen ports inside the container:
+//   :4317  OTLP/gRPC ingest
+//   :4318  OTLP/HTTP ingest
+//   :3100  Loki push API  (POST /loki/api/v1/push)
+
+// --- OTLP ingest ------------------------------------------------------
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    logs = [otelcol.exporter.otlp.gateway.input]
+  }
+}
+
+// --- Loki push ingest -------------------------------------------------
+// Accept raw loglines over Loki's push protocol, then bridge them into
+// OTLP log records so they follow the same path to the gateway.
+loki.source.api "push" {
+  http {
+    listen_address = "0.0.0.0"
+    listen_port    = 3100
+  }
+  forward_to = [otelcol.receiver.loki.default.receiver]
+}
+
+otelcol.receiver.loki "default" {
+  output {
+    logs = [otelcol.exporter.otlp.gateway.input]
+  }
+}
+
+// --- Shared OTLP export to the gateway --------------------------------
+otelcol.exporter.otlp "gateway" {
+  client {
+    endpoint = "gateway:4317"
+    tls {
+      insecure = true
+    }
+  }
+}

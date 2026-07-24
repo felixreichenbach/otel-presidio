@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: presidio-gateway-config
+  labels:
+    app: presidio-gateway
+data:
+  PRESIDIO_ANALYZER_URL: "http://presidio-analyzer:3000"
+  PRESIDIO_ANONYMIZER_URL: "http://presidio-anonymizer:3000"
+  REDACT_ENTITIES: "PERSON,EMAIL_ADDRESS,PHONE_NUMBER,CREDIT_CARD,IP_ADDRESS,US_SSN"
+  ANONYMIZE_OPERATOR: "replace"
+  SCAN_JSON: "true"
+  EXPORT_PROTOCOL: "grpc"
+  EXPORT_ENDPOINTS: "otel-gateway.observability.svc:4317"
+  EXPORT_INSECURE: "false"
+  FAIL_MODE: "reject"
+  LOG_LEVEL: "INFO"

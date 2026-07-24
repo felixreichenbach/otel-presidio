@@ -1,0 +1,26 @@
+# Downstream OTLP receiver used in the demo stack.
+# It simply logs everything it receives so you can confirm the gateway
+# forwarded already-redacted log records.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  debug:
+    verbosity: detailed
+  file:
+    path: /output/received-logs.json
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, file]

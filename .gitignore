@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.env
+*.egg-info/
+.DS_Store
+
+# Downstream collector output (keep the dir, ignore captured logs)
+output/*
+!output/.gitkeep
