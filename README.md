@@ -26,16 +26,24 @@ The gateway is a **single container**. Presidio runs as its own two services
 
 ## What it does
 
-- Ingests logs over **OTLP/gRPC** (`:4317`) and **OTLP/HTTP** (`:4318`).
-- Detects entities with the Presidio **Analyzer** and redacts them with the
-  Presidio **Anonymizer**.
+- Ingests logs over **OTLP/gRPC** (`:4317`) and **OTLP/HTTP** (`:4318`); the
+  HTTP path accepts both protobuf and JSON payloads.
+- Detects sensitive entities with the Presidio **Analyzer** and rewrites them
+  with the Presidio **Anonymizer** — `replace` (default, `<ENTITY_TYPE>`),
+  `mask`, `hash`, `redact`, or a fixed placeholder.
+- Redacts string log bodies and structured JSON bodies (optionally limited to
+  named fields), recursing into nested map/array values, plus explicitly
+  selected attribute values.
 - Preserves all non-sensitive metadata — timestamps, severity, resource/scope
   attributes, and trace/span IDs are never touched.
-- Redacts plain-text bodies and structured JSON bodies (optionally scoped to
-  named fields), plus explicitly configured attributes.
-- Forwards sanitized logs over OTLP to one or more downstream targets
-  (fan-out), with per-target auth headers and retry/backoff.
-- Exposes `/healthz`, `/readyz`, and Prometheus `/metrics`.
+- Forwards sanitized logs over **OTLP/gRPC or OTLP/HTTP** to one or more
+  downstream targets (fan-out) — e.g. an OTEL Collector or Grafana Cloud —
+  each with its own auth headers, timeout, and retry/backoff.
+- Fails safe: rejects a batch with `503`/`UNAVAILABLE` so the sender retries
+  when Presidio is unavailable (configurable via `FAIL_MODE`, see below) or
+  when every downstream target fails.
+- Exposes `/healthz` (liveness), `/readyz` (Presidio reachability), and
+  Prometheus `/metrics`.
 
 ## Quick start (Docker Compose)
 
