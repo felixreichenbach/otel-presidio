@@ -362,8 +362,27 @@ tests/              # unit tests
 This is an MVP targeting the acceptance criteria in
 [requirements.md](requirements.md): OTLP ingest, Presidio redaction of
 configured entities, OTLP forwarding to ≥1 downstream, health + metrics, and
-fully externalized configuration. Persistent buffering/queueing, inbound TLS,
-mTLS, and per-tenant policy are noted as future enhancements.
+fully externalized configuration. See the Roadmap for what's next.
+
+## Roadmap
+
+Implemented today: OTLP **logs** ingest → Presidio redaction → OTLP fan-out to
+one or more downstream targets. Because the API is OTLP, the same architecture
+generalizes to other telemetry signals — those, plus hardening and performance
+work, are tracked below.
+
+- [ ] **OTLP traces** — ingest `/v1/traces` + gRPC `TraceService`, redact span
+      names, span/event attributes (extends the logs-only redactor)
+- [ ] **OTLP metrics** — redact sensitive metric attribute values
+- [ ] **Concurrent Presidio calls** — batch/parallelize per-field `analyze` to
+      cut JSON-body latency (currently one sequential call per string field)
+- [ ] **Non-blocking HTTP ingest** — run redaction off the event loop (uvicorn
+      workers / threadpool) so the OTLP/HTTP path stops serializing
+- [ ] **Persistent buffering / queueing** — ride out downstream outages without
+      relying on upstream sender retries
+- [ ] **Inbound TLS + mTLS** on the OTLP receivers
+- [ ] **Per-tenant redaction policy** — entities and operators configurable per
+      tenant
 
 ## License
 
