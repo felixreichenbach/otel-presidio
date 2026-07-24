@@ -82,7 +82,11 @@ PROFILES = {
 
 def build_request(profile: str, batch_size: int) -> logs_service_pb2.ExportLogsServiceRequest:
     bodies = PROFILES[profile]
-    now = int(time.time() * 1e9)
+    # Real wall-clock nanoseconds, fresh on every call, so each record carries a
+    # unique timestamp. Downstream stores that dedup identical (labels, ts, line)
+    # entries -- e.g. Loki / Grafana Cloud -- would otherwise collapse a whole run
+    # into a handful of lines.
+    now = time.time_ns()
     svc = common_pb2.KeyValue(
         key="service.name", value=common_pb2.AnyValue(string_value="loadtest")
     )
@@ -107,33 +111,40 @@ def build_request(profile: str, batch_size: int) -> logs_service_pb2.ExportLogsS
 
 
 # --- senders (one shared instance; httpx.Client and grpc stubs are thread-safe)
+# Each send() builds a fresh request so timestamps are current/unique. Building a
+# small batch protobuf per send costs a little client CPU -- negligible next to
+# the Presidio round-trips, and the payoff is that downstream stores don't dedup.
 
 
 class HttpSender:
-    def __init__(self, url: str, timeout: float, req) -> None:
+    def __init__(self, url: str, timeout: float, profile: str, batch_size: int) -> None:
         self.url = url
+        self.profile = profile
+        self.batch_size = batch_size
         self.client = httpx.Client(
             timeout=timeout,
             headers={"content-type": "application/x-protobuf"},
             limits=httpx.Limits(max_connections=1024, max_keepalive_connections=1024),
         )
-        self.payload = req.SerializeToString()
 
     def send(self):
-        r = self.client.post(self.url, content=self.payload)
+        req = build_request(self.profile, self.batch_size)
+        r = self.client.post(self.url, content=req.SerializeToString())
         return r.status_code == 200, str(r.status_code)
 
 
 class GrpcSender:
-    def __init__(self, target: str, timeout: float, req) -> None:
+    def __init__(self, target: str, timeout: float, profile: str, batch_size: int) -> None:
         self.channel = grpc.insecure_channel(target)
         self.stub = logs_service_pb2_grpc.LogsServiceStub(self.channel)
         self.timeout = timeout
-        self.req = req
+        self.profile = profile
+        self.batch_size = batch_size
 
     def send(self):
+        req = build_request(self.profile, self.batch_size)
         try:
-            self.stub.Export(self.req, timeout=self.timeout)
+            self.stub.Export(req, timeout=self.timeout)
             return True, "OK"
         except grpc.RpcError as exc:
             return False, str(exc.code())
@@ -458,12 +469,11 @@ def main():
         print("gateway not ready; aborting")
         raise SystemExit(1)
 
-    req = build_request(args.profile, args.batch_size)
     if args.protocol == "grpc":
-        sender = GrpcSender(grpc_target, args.timeout, req)
+        sender = GrpcSender(grpc_target, args.timeout, args.profile, args.batch_size)
         target = grpc_target
     else:
-        sender = HttpSender(http_url, args.timeout, req)
+        sender = HttpSender(http_url, args.timeout, args.profile, args.batch_size)
         target = http_url
 
     open_mode = args.rate > 0
