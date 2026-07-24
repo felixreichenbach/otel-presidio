@@ -1,4 +1,4 @@
-name: loki-presidio
+name: otel-presidio
 
 services:
   presidio-analyzer:
