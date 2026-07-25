@@ -12,13 +12,10 @@ Collector, Grafana Cloud, …).
                                 ▲         │           ▲         │
                               1 │         │ 2       3 │         │ 4
                                 │         ▼           │         ▼
-  ┌──────────────┐ OTLP    ┌────────────────────────────────────────┐        ┌──▶ Grafana Cloud
-  │ Alloy / OTEL │────────▶│                Gateway                 │──OTLP──┼──▶ stdout
-  │ (front door) │ gRPC    │          detect + redact PII           │        └──▶ file
-  └──────────────┘         └────────────────────────────────────────┘
-         ▲
-   OTLP  │  Loki push
-  clients┘  (via Alloy)
+                           ┌────────────────────────────────────────┐
+        OTLP ─────────────▶│                Gateway                 │─────────────▶ redacted OTLP
+                           │          detect + redact PII           │
+                           └────────────────────────────────────────┘
 ```
 
 The gateway is a **single container**. Presidio runs as its own two services,
@@ -216,13 +213,20 @@ Error logs never include original or redacted payloads.
 
 ## Kubernetes
 
-Manifests are in [deploy/k8s/](deploy/k8s/): a Deployment with liveness/readiness
-probes and resource requests/limits, a Service exposing both OTLP ports, a
-ConfigMap for non-secret config, and a Secret for downstream auth headers.
+Manifests are in [deploy/k8s/](deploy/k8s/) — a kustomize overlay deploying the
+gateway and both Presidio services, each as a Deployment + Service +
+HorizontalPodAutoscaler, plus a ConfigMap for non-secret config and a Secret for
+downstream auth headers. The gateway carries liveness/readiness probes and
+resource requests/limits.
 
 ```bash
-kubectl apply -f deploy/k8s/
+kubectl apply -k deploy/k8s
 ```
+
+No downstream is bundled: set `EXPORT_ENDPOINTS` in the ConfigMap to your own
+OTLP target (an OTEL Collector / Alloy Service, or a vendor OTLP endpoint). See
+[deploy/k8s/README.md](deploy/k8s/README.md) for scaling, load-balancing, and
+image-build notes.
 
 ## Tests
 
