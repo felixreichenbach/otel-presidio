@@ -12,13 +12,10 @@ Collector, Grafana Cloud, …).
                                 ▲         │           ▲         │
                               1 │         │ 2       3 │         │ 4
                                 │         ▼           │         ▼
-  ┌──────────────┐  OTLP   ┌────────────────────────────────────────┐            ┌──▶ OTEL Collector / Alloy
-  │ Alloy / OTEL │────────▶│                Gateway                 │──redacted──┼──▶ Grafana Cloud OTLP API
-  │ (front door) │gRPC+HTTP│          detect + redact PII           │    OTLP    └──▶ any OTLP endpoint
-  └──────────────┘         └────────────────────────────────────────┘
-         ▲
-   OTLP  │  Loki push
-  clients┘  (via Alloy)
+                           ┌────────────────────────────────────────┐
+        OTLP ─────────────▶│                Gateway                 │─────────────▶ redacted OTLP
+                           │          detect + redact PII           │
+                           └────────────────────────────────────────┘
 ```
 
 The gateway is a **single container**. Presidio runs as its own two services,
