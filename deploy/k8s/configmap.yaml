@@ -11,10 +11,14 @@ data:
   ANONYMIZE_OPERATOR: "replace"
   SCAN_JSON: "true"
   EXPORT_PROTOCOL: "grpc"
-  # Forward to the in-cluster downstream collector Service (which then ships to
-  # Grafana Cloud). To export straight to Grafana Cloud instead, point this at
-  # your OTLP gateway and set EXPORT_INSECURE "false" + auth via the Secret.
-  EXPORT_ENDPOINTS: "downstream-collector:4317"
+  # REQUIRED: point the gateway at your OTLP downstream — an in-cluster OTEL
+  # Collector / Alloy Service (e.g. "otel-collector:4317"), or a vendor OTLP
+  # endpoint (e.g. "https://otlp-gateway-<region>.grafana.net/otlp", with
+  # EXPORT_PROTOCOL "http"). The gateway ships redacted logs here over OTLP;
+  # no collector is bundled with this deployment.
+  EXPORT_ENDPOINTS: "otel-collector:4317"
+  # true for plaintext in-cluster hops; set "false" for TLS / external endpoints
+  # (and supply auth via the Secret's EXPORT_HEADERS).
   EXPORT_INSECURE: "true"
   FAIL_MODE: "reject"
   LOG_LEVEL: "INFO"

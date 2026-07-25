@@ -1,8 +1,13 @@
 # Kubernetes deployment
 
-The Kubernetes translation of [`docker-compose.yml`](../../docker-compose.yml).
-Every compose service becomes a **Deployment + Service + HorizontalPodAutoscaler**,
-so the pipeline scales horizontally and each hop is load-balanced.
+The Kubernetes deployment of the redaction gateway and its Presidio services.
+Each becomes a **Deployment + Service + HorizontalPodAutoscaler**, so the
+pipeline scales horizontally and each hop is load-balanced.
+
+The gateway speaks OTLP in *and* out, so it works with any OTLP downstream —
+an OTEL Collector, Grafana Alloy, or a vendor OTLP endpoint. **No downstream is
+bundled here**; you point the gateway at yours via `EXPORT_ENDPOINTS` (see
+[Apply](#apply)).
 
 ```
                              ┌─────────────────────┐     ┌───────────────────────┐
@@ -12,16 +17,17 @@ so the pipeline scales horizontally and each hop is load-balanced.
                                  ▲            │              ▲            │
                         ① analyze│  ② results │      ③ anon. │  ④ results │
                            (HTTP)│            ▼        (HTTP)│            ▼
- ┌─────────┐   ┌────────┐   ┌──────────────────────────────────────────────────┐   redacted    ┌──────────────────────────┐
- │ senders │─▶ │  -lb   │─▶ │               presidio-gateway (N)               │──OTLP/gRPC──▶ │ downstream-collector (N) │──▶ Grafana Cloud
- │         │OTLP│  (LB)  │  │                detect + redact PII                │               │     ClusterIP + HPA      │
- └─────────┘   └────────┘   └──────────────────────────────────────────────────┘               └──────────────────────────┘
+ ┌─────────┐   ┌────────┐   ┌──────────────────────────────────────────────────┐   redacted     your OTLP downstream
+ │ senders │─▶ │  -lb   │─▶ │               presidio-gateway (N)               │──OTLP────────▶ (OTEL Collector / Alloy
+ │         │OTLP│  (LB)  │  │                detect + redact PII                │                 / vendor OTLP API)
+ └─────────┘   └────────┘   └──────────────────────────────────────────────────┘
 ```
 
 The gateway is the only hop that moves log data downstream. It calls the
 Analyzer (① request → ② spans) and Anonymizer (③ request → ④ redacted text)
 as plain request/response HTTP — those services never forward logs themselves —
-then the gateway exports the redacted batch to the collector over OTLP/gRPC.
+then the gateway exports the redacted batch over OTLP to whatever
+`EXPORT_ENDPOINTS` points at.
 
 ## Apply
 
@@ -40,8 +46,11 @@ Requires a running **metrics-server** for the HPAs, and (for the external
 > `kubectl port-forward svc/presidio-gateway 4318:4318`.
 
 Before applying, edit the placeholder values:
-- `downstream-collector.yaml` Secret → your Grafana Cloud OTLP endpoint / instance ID / token.
-- `secret.yaml` → gateway `EXPORT_HEADERS` (only if exporting straight to Grafana Cloud instead of via the collector).
+- `configmap.yaml` → `EXPORT_ENDPOINTS` (**required**): your OTLP downstream —
+  an in-cluster Collector/Alloy Service, or a vendor OTLP endpoint (set
+  `EXPORT_PROTOCOL` `http` + `EXPORT_INSECURE` `false` for the latter).
+- `secret.yaml` → gateway `EXPORT_HEADERS`, only if that downstream needs auth
+  (e.g. Grafana Cloud: `Authorization=Basic <base64 instanceID:token>`).
 - `gateway.yaml` → the `image:` reference. It defaults to the locally-built
   `otel-presidio-gateway:0.1.0` (see "Building the gateway image" below). For a
   remote cluster, push the image to a registry and point this at it.
@@ -67,7 +76,7 @@ kind load docker-image otel-presidio-gateway:0.1.0   # kind only
   Services load-balance *per request* via kube-proxy — scaling the target
   Deployment immediately spreads load. This is the important path: the analyzer
   (spaCy NER) is the CPU bottleneck, so it has the widest HPA range.
-- **gRPC hops** (OTLP ingest into the gateway, gateway → collector): gRPC is a
+- **gRPC hops** (OTLP ingest into the gateway, gateway → downstream): gRPC is a
   long-lived HTTP/2 stream, so an L4 ClusterIP pins each connection to a single
   backend pod. With multiple client *and* server replicas, connections still
   spread statistically. For strict per-request gRPC balancing, front those hops
@@ -89,7 +98,6 @@ kind load docker-image otel-presidio-gateway:0.1.0   # kind only
   | `presidio-analyzer` (bottleneck) | 1 | 1→3 |
   | `presidio-gateway` | 1 | 1→3 |
   | `presidio-anonymizer` | 1 | 1→2 |
-  | `downstream-collector` | 1 | 1→2 |
 
 - **Moving to a real cluster:** raise `minReplicas` to ≥2 for HA and lift the
   `maxReplicas` ceilings (the analyzer earns the widest range). Add a
