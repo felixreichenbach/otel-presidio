@@ -10,17 +10,17 @@ bundled here**; you point the gateway at yours via `EXPORT_ENDPOINTS` (see
 [Apply](#apply)).
 
 ```
-                             ┌─────────────────────┐     ┌───────────────────────┐
-                             │  presidio-analyzer  │     │  presidio-anonymizer  │
-                             │  (N) ClusterIP+HPA  │     │  (N) ClusterIP + HPA  │
-                             └─────────────────────┘     └───────────────────────┘
-                                 ▲            │              ▲            │
-                        ① analyze│  ② results │      ③ anon. │  ④ results │
-                           (HTTP)│            ▼        (HTTP)│            ▼
- ┌─────────┐   ┌────────┐   ┌──────────────────────────────────────────────────┐   redacted     your OTLP downstream
- │ senders │─▶ │  -lb   │─▶ │               presidio-gateway (N)               │──OTLP────────▶ (OTEL Collector / Alloy
- │         │OTLP│  (LB)  │  │                detect + redact PII                │                 / vendor OTLP API)
- └─────────┘   └────────┘   └──────────────────────────────────────────────────┘
+                                   ┌─────────────────────┐     ┌───────────────────────┐
+                                   │  presidio-analyzer  │     │  presidio-anonymizer  │
+                                   │  (N) ClusterIP+HPA  │     │  (N) ClusterIP + HPA  │
+                                   └─────────────────────┘     └───────────────────────┘
+                                       ▲            │              ▲            │
+                              ① analyze│  ② results │      ③ anon. │  ④ results │
+                                 (HTTP)│            ▼        (HTTP)│            ▼
+ ┌─────────┐  OTLP   ┌────────┐   ┌──────────────────────────────────────────────────┐
+ │ senders │────────▶│  -lb   │──▶│               presidio-gateway (N)               │──▶ redacted OTLP
+ │         │         │  (LB)  │   │               detect + redact PII                │    → EXPORT_ENDPOINTS
+ └─────────┘         └────────┘   └──────────────────────────────────────────────────┘
 ```
 
 The gateway is the only hop that moves log data downstream. It calls the
