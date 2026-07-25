@@ -30,7 +30,7 @@ services:
       timeout: 5s
       retries: 20
 
-  gateway:
+  otel-gateway:
     build: .
     ports:
       - "4317:4317"   # OTLP/gRPC ingest
@@ -92,4 +92,4 @@ services:
       - "4328:4318"       # OTLP/HTTP ingest
       - "3100:3100"       # Loki push API ingest
     depends_on:
-      - gateway
+      - otel-gateway

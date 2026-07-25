@@ -3,18 +3,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: presidio-gateway
+  name: otel-gateway
   labels:
-    app: presidio-gateway
+    app: otel-gateway
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: presidio-gateway
+      app: otel-gateway
   template:
     metadata:
       labels:
-        app: presidio-gateway
+        app: otel-gateway
     spec:
       securityContext:
         runAsNonRoot: true
@@ -30,9 +30,9 @@ spec:
               containerPort: 4318
           envFrom:
             - configMapRef:
-                name: presidio-gateway-config
+                name: otel-gateway-config
             - secretRef:
-                name: presidio-gateway-secrets
+                name: otel-gateway-secrets
           readinessProbe:
             httpGet:
               path: /readyz
@@ -61,13 +61,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: presidio-gateway
+  name: otel-gateway
   labels:
-    app: presidio-gateway
+    app: otel-gateway
 spec:
   type: ClusterIP
   selector:
-    app: presidio-gateway
+    app: otel-gateway
   ports:
     - name: otlp-grpc
       port: 4317
@@ -81,13 +81,13 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: presidio-gateway-lb
+  name: otel-gateway-lb
   labels:
-    app: presidio-gateway
+    app: otel-gateway
 spec:
   type: LoadBalancer
   selector:
-    app: presidio-gateway
+    app: otel-gateway
   ports:
     - name: otlp-grpc
       port: 4317
@@ -99,14 +99,14 @@ spec:
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: presidio-gateway
+  name: otel-gateway
   labels:
-    app: presidio-gateway
+    app: otel-gateway
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: presidio-gateway
+    name: otel-gateway
   minReplicas: 1
   maxReplicas: 3
   metrics:

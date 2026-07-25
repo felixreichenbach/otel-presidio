@@ -18,7 +18,7 @@ bundled here**; you point the gateway at yours via `EXPORT_ENDPOINTS` (see
                               ① analyze│  ② results │      ③ anon. │  ④ results │
                                  (HTTP)│            ▼        (HTTP)│            ▼
  ┌─────────┐  OTLP   ┌────────┐   ┌──────────────────────────────────────────────────┐
- │ senders │────────▶│  -lb   │──▶│               presidio-gateway (N)               │──▶ redacted OTLP
+ │ senders │────────▶│  -lb   │──▶│                 otel-gateway (N)                 │──▶ redacted OTLP
  │         │         │  (LB)  │   │               detect + redact PII                │    → EXPORT_ENDPOINTS
  └─────────┘         └────────┘   └──────────────────────────────────────────────────┘
 ```
@@ -36,14 +36,14 @@ kubectl apply -k deploy/k8s
 ```
 
 Requires a running **metrics-server** for the HPAs, and (for the external
-`presidio-gateway-lb`) a cloud/MetalLB LoadBalancer provider.
+`otel-gateway-lb`) a cloud/MetalLB LoadBalancer provider.
 
 > **Local (laptop) clusters:** the defaults below are sized for a single node
 > (~0.95 CPU / 1.5 GiB requested at rest, ~2.65 CPU / 4.1 GiB fully scaled —
-> give the VM ≥4 CPU / ≥6 GiB). The `presidio-gateway-lb` LoadBalancer works
+> give the VM ≥4 CPU / ≥6 GiB). The `otel-gateway-lb` LoadBalancer works
 > out of the box on Docker Desktop; on minikube run `minikube tunnel`; on kind
 > use `cloud-provider-kind` or just
-> `kubectl port-forward svc/presidio-gateway 4318:4318`.
+> `kubectl port-forward svc/otel-gateway 4318:4318`.
 
 Before applying, edit the placeholder values:
 - `configmap.yaml` → `EXPORT_ENDPOINTS` (**required**): your OTLP downstream —
@@ -96,7 +96,7 @@ kind load docker-image otel-presidio-gateway:0.1.0   # kind only
   | Component | replicas | HPA min→max |
   |---|---|---|
   | `presidio-analyzer` (bottleneck) | 1 | 1→3 |
-  | `presidio-gateway` | 1 | 1→3 |
+  | `otel-gateway` | 1 | 1→3 |
   | `presidio-anonymizer` | 1 | 1→2 |
 
 - **Moving to a real cluster:** raise `minReplicas` to ≥2 for HA and lift the

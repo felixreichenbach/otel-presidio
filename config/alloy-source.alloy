@@ -2,7 +2,7 @@
 // then forward everything to the redaction gateway over OTLP/gRPC.
 // Enable with:  docker compose --profile alloy up
 //
-// Flow:  client --OTLP------------------> Alloy --OTLP/gRPC--> gateway:4317 --> downstream
+// Flow:  client --OTLP------------------> Alloy --OTLP/gRPC--> otel-gateway:4317 --> downstream
 //        client --Loki push--> [Loki->OTLP bridge] --^
 //
 // Listen ports inside the container:
@@ -45,7 +45,7 @@ otelcol.receiver.loki "default" {
 // --- Shared OTLP export to the gateway --------------------------------
 otelcol.exporter.otlp "gateway" {
   client {
-    endpoint = "gateway:4317"
+    endpoint = "otel-gateway:4317"
     tls {
       insecure = true
     }
