@@ -112,9 +112,9 @@ Key points:
 
 ## Quick start (Docker Compose)
 
-Brings up Presidio (analyzer + anonymizer), the gateway, and a downstream OTEL
-Collector that echoes what it receives to stdout and to
-`output/received-logs.json`, and (when configured) forwards it to Grafana Cloud.
+Brings up Presidio (analyzer + anonymizer) and the gateway. Configure the
+downstream target via `EXPORT_ENDPOINTS` in
+[docker-compose.yml](docker-compose.yml).
 
 ```bash
 docker compose up --build
@@ -127,48 +127,9 @@ pip install -r requirements.txt        # for the sender script
 python scripts/send_logs.py            # OTLP/HTTP -> http://localhost:4318/v1/logs
 ```
 
-Inspect the downstream collector's output — in `docker compose logs
-downstream-collector` or `output/received-logs.json` — names, emails, IPs,
+Redacted logs are forwarded to `EXPORT_ENDPOINTS` — names, emails, IPs,
 phone numbers, credit-card numbers and SSNs will be replaced with
 `<ENTITY_TYPE>` tags, while timestamps, severity and attributes remain intact.
-
-### Forwarding to Grafana Cloud
-
-The downstream collector can ship the already-redacted logs to Grafana Cloud
-over OTLP/HTTP. Copy the example env file and fill in your stack's OTLP
-credentials (Grafana Cloud Portal → your stack → **OTLP**):
-
-```bash
-cp .env.example .env
-# edit .env: GRAFANA_CLOUD_OTLP_ENDPOINT, GRAFANA_CLOUD_INSTANCE_ID, GRAFANA_CLOUD_API_TOKEN
-docker compose up -d --build downstream-collector
-```
-
-The instance ID is the basic-auth username and a Cloud Access Policy token
-(scope `logs:write`) is the password. `.env` is gitignored, so credentials stay
-out of the repo. View the redacted logs in Grafana Cloud via Explore → your Loki
-data source.
-
-To route through a real **Grafana Alloy** front door — Alloy receives the logs
-(over OTLP *or* the Loki push API) and forwards them to the gateway over
-OTLP/gRPC:
-
-```bash
-docker compose --profile alloy up --build
-
-# via OTLP/HTTP
-python scripts/send_logs.py http://localhost:4328/v1/logs   # -> Alloy -> gateway -> collector
-
-# via the Loki push API
-curl -H "Content-Type: application/json" http://localhost:3100/loki/api/v1/push \
-  -d '{"streams":[{"stream":{"service_name":"demo"},"values":[["'"$(date +%s)"'000000000","User John Smith john.smith@example.com from 192.168.1.24"]]}]}'
-```
-
-Alloy listens for OTLP on host ports `4327` (gRPC) and `4328` (HTTP), for Loki
-push on `3100`, and its UI is at `http://localhost:12345`.
-
-> With no argument `send_logs.py` targets the gateway directly (`:4318`),
-> bypassing Alloy; pass the `:4328` endpoint to route through Alloy.
 
 ## Configuration
 
@@ -267,8 +228,8 @@ pytest
 
 Unit tests (no network / no Presidio required) cover env parsing, anonymizer
 operator mapping, body/JSON/attribute redaction, metadata preservation, and the
-three failure modes. Integration behaviour (Alloy → gateway → collector,
-Presidio-down, downstream-down) is exercised through the Compose stack above.
+three failure modes. Integration behaviour (Presidio-down, downstream-down) is
+exercised through the Compose stack above.
 
 ## Load testing
 
@@ -382,12 +343,10 @@ gateway/            # the container's application code
   server_grpc.py    # OTLP/gRPC ingestion
   server_http.py    # OTLP/HTTP ingestion + health + metrics
   main.py           # entrypoint
-config/             # compose-stack configs (collector, alloy, sample logs)
 deploy/k8s/         # Kubernetes manifests
 scripts/send_logs.py# OTLP load generator for quick validation
 scripts/loadtest.py # latency + CPU/memory load test
 tests/              # unit tests
-.env.example        # Grafana Cloud OTLP credentials template (copy to .env)
 ```
 
 ## Scope
