@@ -199,6 +199,35 @@ Everything is set via environment variables (no hardcoded endpoints/secrets).
 | `FAIL_MODE` | `reject` | Behaviour when Presidio is down: `reject` (sender retries) \| `drop` \| `passthrough` |
 | `LOG_LEVEL` | `INFO` | Log verbosity |
 
+## Observability
+
+The gateway exposes three HTTP endpoints on the same port as OTLP/HTTP ingestion (default `4318`):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /healthz` | Liveness — returns `200 OK` when the process is running |
+| `GET /readyz` | Readiness — returns `200 OK` only when Presidio (both Analyzer and Anonymizer) is reachable |
+| `GET /metrics` | Prometheus metrics in text format |
+
+### Prometheus metrics
+
+```bash
+curl http://localhost:4318/metrics
+```
+
+| Metric | Type | Description |
+|---|---|---|
+| `gateway_log_records_received_total` | Counter | Log records received for redaction |
+| `gateway_log_records_forwarded_total` | Counter | Log records successfully forwarded downstream |
+| `gateway_log_records_dropped_total` | Counter | Log records dropped due to failures |
+| `gateway_entities_redacted_total` | Counter | Sensitive entities redacted by Presidio |
+| `gateway_presidio_errors_total` | Counter | Errors calling the Presidio Analyzer/Anonymizer |
+| `gateway_export_errors_total` | Counter | Errors exporting to a downstream target (labelled by `endpoint`) |
+| `gateway_process_seconds` | Histogram | End-to-end processing latency per received batch |
+| `gateway_ready` | Gauge | `1` when Presidio is reachable; `0` otherwise |
+
+Point a Prometheus scrape config at `http://<gateway-host>:4318/metrics`. In Kubernetes the same port is exposed by the gateway Service — no separate metrics port needed.
+
 ### Failure handling
 
 When Presidio is unavailable, `FAIL_MODE` decides what happens to a batch:
