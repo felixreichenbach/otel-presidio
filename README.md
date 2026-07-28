@@ -373,6 +373,9 @@ work, are tracked below.
 - [ ] **Persistent buffering / queueing** — ride out downstream outages without
       relying on upstream sender retries
 - [ ] **Inbound TLS + mTLS** on the OTLP receivers
+- [ ] **Kubernetes deployment review** — validate the manifests end-to-end on a
+      real cluster: image publishing/pull policy, resource requests vs the
+      analyzer's per-worker model footprint, HPA bounds, Secret handling
 - [ ] **Per-tenant redaction policy** — entities and operators configurable per
       tenant
 
